@@ -13,7 +13,13 @@ const INITIAL_STAT = {
 
 const { BOT_TOKEN, SUMMONER_NAME , SUMMONER_ID , PORT, DOMAIN, RIOT_API_KEY   } = process.env;
 
-const bot = new Bot(BOT_TOKEN);
+const bot = new Bot(BOT_TOKEN, {
+    client: {
+        // We accept the drawback of webhook replies for typing status.
+        canUseWebhookReply: (method) => method === "sendChatAction",
+    },
+});
+
 bot.use(hydrate());
 
 const getLastGameInfo = async () => await db.get("LAST_GAME_INFO");
@@ -79,19 +85,19 @@ bot.callbackQuery("history-list", async (ctx) => {
     await ctx.answerCallbackQuery()
 })
 
-const domain = String(DOMAIN);
-const secretPath = String(BOT_TOKEN);
+// const domain = String(DOMAIN);
+// const secretPath = String(BOT_TOKEN);
 
 const app = express();
 app.use(express.json());
-app.use(`/${secretPath}`, webhookCallback(bot, "express"));
+app.use(webhookCallback(bot, "express"));
 
-app.listen(Number(PORT), async () => {
+const port = PORT || 3002;
+app.listen(port, async () => {
     updateUserInfo().catch(error => console.log(error))
-    await bot.api.setWebhook(`https://${domain}/${secretPath}`);
 });
 
-bot.start();
+// bot.start();
 
 const updateUserInfo = async function(){
     const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`)
@@ -113,6 +119,10 @@ const updateUserInfo = async function(){
                     console.log("Сейчас нет игр")
                 }
 
+                app.post(`https://api.telegram.org/${BOT_TOKEN}/setWebhook?url=${DOMAIN}`, (req, res) => {
+                    res.status(200).end()
+                })
+
                 const playerStat = lastGameStats.info.participants.find(player => {
                     return player.puuid === PUUID
                 });
@@ -131,6 +141,6 @@ const updateUserInfo = async function(){
             } catch (e) {
                 reject();
             }
-        }, 1000 * 60);
+        }, 1000);
     });
 }
