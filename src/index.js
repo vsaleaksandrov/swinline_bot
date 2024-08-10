@@ -102,7 +102,7 @@ app.listen(port, async () => {
     updateUserInfo().catch(error => console.log(error))
 });
 
-// bot.start();
+bot.start();
 
 const updateUserInfo = async function(){
     const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`)
