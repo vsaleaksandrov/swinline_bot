@@ -139,11 +139,20 @@ bot.callbackQuery("set-bet", async (ctx) => {
         return;
     }
 
+    if (!SECONDS_LEFT) {
+        await ctx.callbackQuery.message.editText(`В данный момент игра запущена. Время ставок прошло.`, { reply_markup: menuKeyboard });
+        return;
+    }
+
     await ctx.callbackQuery.message.editText(`Сделайте ставку. До конца приёма ставок осталось ${SECONDS_LEFT} секунд`, { reply_markup: betKeyboard });
 })
 
 
 bot.callbackQuery("okay", async (ctx) => {
+    await ctx.callbackQuery.message.editText(INTRO_MESSAGE, {
+        reply_markup: menuKeyboard,
+    })
+
     setInterval(async () => {
         try {
             const CURRENT_GAME = await getCurrentGame();
@@ -179,8 +188,8 @@ bot.callbackQuery("okay", async (ctx) => {
                 reply_markup: menuKeyboard,
             })
 
-            if (CURRENT_GAME.gameLength < 3000) {
-                SECONDS_LEFT = 3000 - CURRENT_GAME.gameLength;
+            if (CURRENT_GAME.gameLength < 1000) {
+                SECONDS_LEFT = 1000 - CURRENT_GAME.gameLength;
             } else {
                 SECONDS_LEFT = 0;
             }
@@ -189,7 +198,7 @@ bot.callbackQuery("okay", async (ctx) => {
         } catch (e) {
             console.log(e)
         }
-    }, 20000);
+    }, 10000);
 })
 
 bot.callbackQuery("balance-stat", async (ctx) => {
