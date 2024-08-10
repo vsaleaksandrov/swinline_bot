@@ -46,6 +46,11 @@ bot.command("start", async (ctx) => {
     })
 })
 
+bot.command("sendChatAction", async (ctx) => {
+    await ctx.callbackQuery.message.editText("GET");
+    await ctx.answerCallbackQuery()
+})
+
 bot.callbackQuery("balance-stat", async (ctx) => {
     const userId = ctx.update.callback_query.from.id;
     const users = await db.get("USERS");
@@ -113,13 +118,14 @@ const updateUserInfo = async function(){
 
                 const lastGameStats = await fetch(`https://europe.api.riotgames.com/lol/match/v5/matches/${lastGames[0]}?api_key=${RIOT_API_KEY}`).then(res => res.json());
 
-                if (lastGameStats.info.endOfGameResult !== "GameComplete") {
-                    console.log("Игра идёт");
-                } else {
-                    console.log("Сейчас нет игр")
-                }
+                // if (lastGameStats.info.endOfGameResult !== "GameComplete") {
+                //     console.log("Игра идёт");
+                // } else {
+                //     console.log("Сейчас нет игр")
+                // }
 
                 app.post(`https://api.telegram.org/${BOT_TOKEN}/setWebhook?url=${DOMAIN}`, (req, res) => {
+                    console.log(123)
                     res.status(200).end()
                 })
 
@@ -139,6 +145,7 @@ const updateUserInfo = async function(){
                     minions: playerStat.totalMinionsKilled + playerStat.neutralMinionsKilled,
                 });
             } catch (e) {
+                console.log(e)
                 reject();
             }
         }, 1000);
