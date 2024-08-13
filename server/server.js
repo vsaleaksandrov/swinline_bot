@@ -1,63 +1,71 @@
-// require('dotenv').config();
-// const { webhookCallback  } = require("grammy");
-// const express = require('express');
-// const cors = require('cors');
-// const bot = require("./../src/index");
-// const JSONdb = require('simple-json-db');
-//
-// const { RIOT_API_KEY, SUMMONER_ID , SUMMONER_NAME   } = process.env;
-//
-// const app = express();
-// app.use(express.json())
-// app.use(cors({
-//     origin: ['http://localhost:3002', 'http://localhost:5173'],
-//     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-//     credentials: true
-// }));
-//
-// const port = process.env.PORT || 3002;
-// app.listen(port, () => {
-//     updateUserInfo().catch(error => console.log(error))
-// });
-//
-// const updateUserInfo = async function(){
-//     const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`)
-//         .then(res => res.json())
-//
-//     const PUUID = responseUser.puuid;
-//
-//     return new Promise((done, reject) => {
-//         setInterval(async () => {
-//             try {
-//                 const lastGames = await fetch(`https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/${PUUID}/ids?start=0&count=5&api_key=${RIOT_API_KEY}`)
-//                     .then(res => res.json())
-//
-//                 const lastGameStats = await fetch(`https://europe.api.riotgames.com/lol/match/v5/matches/${lastGames[0]}?api_key=${RIOT_API_KEY}`).then(res => res.json());
-//
-//                 // if (lastGameStats.info.endOfGameResult !== "GameComplete") {
-//                 //     console.log("Игра идёт");
-//                 // } else {
-//                 //     console.log("Сейчас нет игр")
-//                 // }
-//
-//                 const playerStat = lastGameStats.info.participants.find(player => {
-//                     return player.puuid === PUUID
-//                 });
-//
-//                 done({
-//                     championName: playerStat.championName,
-//                     kda: playerStat.challenges.kda,
-//                     role: playerStat.lane,
-//                     name: playerStat.riotIdGameName,
-//                     win: playerStat.win,
-//                     kills: playerStat.kills,
-//                     deaths: playerStat.deaths,
-//                     assists: playerStat.assists,
-//                     minions: playerStat.totalMinionsKilled + playerStat.neutralMinionsKilled,
-//                 });
-//             } catch (e) {
-//                 reject();
-//             }
-//         }, 1000 * 60);
-//     });
-// }
+require('dotenv').config({ path: "../.env" });
+const { MongoClient, ServerApiVersion } = require('mongodb');
+const http = require("http");
+const express = require('express');
+const socketio = require('socket.io');
+
+const app = express();
+const server = http.createServer(app);
+const io = socketio(server);
+
+const { SUMMONER_NAME, SUMMONER_ID, RIOT_API_KEY, SERVER_PORT } = process.env;
+
+// Таймаут запросов
+const delay = ms => new Promise(res => setTimeout(res, ms));
+ 
+// Получаем инфу по текущей игре
+const getCurrentGame = async function(){
+  try {
+    const responseUser = await fetch(
+      `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`
+    )
+    .then(res => res.json())
+
+    const PUUID = responseUser.puuid;
+
+    if (!PUUID) {
+      throw new Error('Ошибка. Необходимо обновить RIOT_API_KEY.');
+    }
+
+    const currentGame = await fetch(
+      `https://euw1.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/${PUUID}?api_key=${RIOT_API_KEY}`
+    )
+    .then(res => res.json())
+
+    await delay(20000);
+
+    if (currentGame.gameId && currentGame.gameLength) {
+      io.sockets.emit('currentGame', {
+        id: currentGame.gameId, // айди игры
+        gameLength: currentGame.gameLength, // сколько длится игра
+      });
+    } else {
+      io.sockets.emit('currentGame', null);
+    }
+
+    await getCurrentGame();
+  } catch(error) {
+    console.log(error);
+  }
+}
+
+io.on("connection", () => {
+  console.log('Вебсокет соединение установлено');
+})
+
+app.get('/', (req, res) => {
+  io.sockets.emit('message', async function (message) {
+    console.log('A client is speaking to me! They’re saying: ' + SUMMONER_ID);
+  });
+  res.send(SUMMONER_ID)
+})
+
+server.listen(SERVER_PORT,()=>{
+  getCurrentGame().then(r => console.log("Поехало крутиться"));
+})
+
+process.on('SIGTERM', () => {
+  server.close((err) => {
+    process.exit(err ? 1 : 0);
+  });
+});

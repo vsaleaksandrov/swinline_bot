@@ -1,49 +1,72 @@
-require('dotenv').config();
-const { Bot, InlineKeyboard, webhookCallback } = require("grammy");
+require('dotenv').config({ path: ".env" });
+const { MongoClient, ServerApiVersion } = require('mongodb');
+const { io } = require("socket.io-client");
+const { Bot, InlineKeyboard } = require("grammy");
 const { hydrate } = require("@grammyjs/hydrate");
 const express = require('express');
-const JSONdb = require('simple-json-db');
-const db = new JSONdb('./src/db.json');
+
+const { BOT_TOKEN, SUMMONER_NAME , SUMMONER_ID , CLIENT_PORT, RIOT_API_KEY, SERVER_PORT, DB_LOGIN, DB_PASS   } = process.env;
 
 const INITIAL_STAT = {
-    bets: 10000,
+    bets: 150000,
     successBetCount: 0,
     totalBets: 0,
     activeBet: null
 }
 
-const { BOT_TOKEN, SUMMONER_NAME , SUMMONER_ID , PORT, DOMAIN, RIOT_API_KEY   } = process.env;
+let LAST_GAMES = null,
+    LAST_GAMES_ACTIVE_INDEX = 0;
 
-const bot = new Bot(BOT_TOKEN);
+const uri = `mongodb+srv://${DB_LOGIN}:${DB_PASS}@cluster0.j9yo8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
+let dbClient = null;
+run().then(res => dbClient = res).catch(console.dir);
 
-bot.use(hydrate());
+async function run () {
+    try {
+        const client = new MongoClient(uri, {
+            serverApi: {
+                version: ServerApiVersion.v1,
+                strict: true,
+                deprecationErrors: true,
+            }
+        });
 
-const getLastGameInfo = async () => {
-    const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`)
-        .then(res => res.json())
-
-    const PUUID = responseUser.puuid;
-    const lastGames = await fetch(`https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/${PUUID}/ids?start=0&count=5&api_key=${RIOT_API_KEY}`)
-        .then(res => res.json())
-
-    const lastGameStats = await fetch(`https://europe.api.riotgames.com/lol/match/v5/matches/${lastGames[0]}?api_key=${RIOT_API_KEY}`).then(res => res.json());
-
-    const playerStat = lastGameStats.info.participants.find(player => {
-        return player.puuid === PUUID
-    });
-
-    return {
-        championName: playerStat.championName,
-        kda: playerStat.challenges.kda,
-        role: playerStat.lane,
-        name: playerStat.riotIdGameName,
-        win: playerStat.win,
-        kills: playerStat.kills,
-        deaths: playerStat.deaths,
-        assists: playerStat.assists,
-        minions: playerStat.totalMinionsKilled + playerStat.neutralMinionsKilled,
-    };
+        await client.connect();
+        return client;
+    } catch (error) {
+        console.error(error);
+    }
 }
+
+const updateLastGames = async function() {
+    try {
+        const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`)
+            .then(res => res.json())
+
+        const PUUID = responseUser.puuid;
+
+        if (!PUUID) {
+            throw new Error('Ошибка. Необходимо обновить RIOT_API_KEY.');
+        }
+
+        return await fetch(`https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/${PUUID}/ids?start=0&count=5&api_key=${RIOT_API_KEY}`)
+            .then(res => res.json());
+    } catch (error) {
+        console.log(error);
+    }
+}
+
+// Запускаем бота, работяги
+const bot = new Bot(BOT_TOKEN);
+bot.use(hydrate());
+bot.start();
+
+// Запускаем сервер
+const app = express();
+app.use(express.json());
+app.listen(CLIENT_PORT);
+
+const socket = io(`http://localhost:${SERVER_PORT}`);
 
 bot.api.setMyCommands([
     {
@@ -54,7 +77,7 @@ bot.api.setMyCommands([
 
 const menuKeyboard = new InlineKeyboard()
     .text("Статистика ставок", "balance-stat")
-    .text("Статистика последних игр", "history-list")
+    .text("Последние игры", "history-list")
     .row()
     .text("Сделать ставку на игру", "set-bet")
 
@@ -78,6 +101,15 @@ let IS_PLAYING_RIGHT_NOW = false;
 let SECONDS_LEFT = 0;
 
 bot.command("start", async (ctx) => {
+    socket.on('currentGame', async function (currentGame) {
+        if (currentGame) {
+            IS_PLAYING_RIGHT_NOW = true;
+            return;
+        }
+
+        IS_PLAYING_RIGHT_NOW = false;
+    });
+
     await ctx.reply(INTRO_MESSAGE, {
         reply_markup: submitKeyboard,
     })
@@ -85,18 +117,6 @@ bot.command("start", async (ctx) => {
 
 bot.callbackQuery("win", async (ctx) => {
     const userId = ctx.update.callback_query.from.id;
-    const users = await db.get("USERS");
-
-    let user = users.find(user => user.id === userId);
-
-    user = {
-        ...INITIAL_STAT,
-        activeBet: {
-            status: "WIN",
-        }
-    }
-
-    await db.set("USERS", [...users, user]);
 
     await ctx.callbackQuery.message.editText(`
 Ваша ставка WIN принята. 
@@ -108,16 +128,6 @@ bot.callbackQuery("win", async (ctx) => {
 
 bot.callbackQuery("lost", async (ctx) => {
     const userId = ctx.update.callback_query.from.id;
-    const users = await db.get("USERS");
-
-    let user = users.find(user => user.id === userId);
-
-    user = {
-        ...INITIAL_STAT,
-        activeBet: "LOST"
-    }
-
-    await db.set("USERS", [...users, user]);
 
     await ctx.callbackQuery.message.editText(`
 Ваша ставка LOST принята.
@@ -134,17 +144,16 @@ bot.callbackQuery("back", async (ctx) => {
 })
 
 bot.callbackQuery("set-bet", async (ctx) => {
-    if (!IS_PLAYING_RIGHT_NOW) {
-        await ctx.callbackQuery.message.editText(`В данный момент игра не запущена. Ставка невозможна.`, { reply_markup: menuKeyboard });
-        return;
+    if (IS_PLAYING_RIGHT_NOW) {
+        await ctx.callbackQuery.message.editText(`Окно ставок закрыто. Пожалуйста, дождитесь результата игры.`, { reply_markup: menuKeyboard });
     }
 
-    if (!SECONDS_LEFT) {
-        await ctx.callbackQuery.message.editText(`В данный момент игра запущена. Время ставок прошло.`, { reply_markup: menuKeyboard });
-        return;
-    }
-
-    await ctx.callbackQuery.message.editText(`Сделайте ставку. До конца приёма ставок осталось ${SECONDS_LEFT} секунд`, { reply_markup: betKeyboard });
+    // if (!SECONDS_LEFT) {
+    //     await ctx.callbackQuery.message.editText(`В данный момент игра запущена. Время ставок прошло.`, { reply_markup: menuKeyboard });
+    //     return;
+    // }
+    //
+    // await ctx.callbackQuery.message.editText(`Сделайте ставку. До конца приёма ставок осталось ${SECONDS_LEFT} секунд`, { reply_markup: betKeyboard });
 })
 
 
@@ -152,69 +161,10 @@ bot.callbackQuery("okay", async (ctx) => {
     await ctx.callbackQuery.message.editText(INTRO_MESSAGE, {
         reply_markup: menuKeyboard,
     })
-
-    setInterval(async () => {
-        try {
-            const CURRENT_GAME = await getCurrentGame();
-
-            if (!CURRENT_GAME.id) {
-                await ctx.callbackQuery.message.editText(INTRO_MESSAGE, {
-                    reply_markup: menuKeyboard,
-                })
-
-                IS_PLAYING_RIGHT_NOW = false;
-
-                const userId = ctx.update.callback_query.from.id;
-                const users = await db.get("USERS");
-
-                let user = users.find(user => user.id === userId);
-
-                if (user.activeBet) {
-                    user = {
-                        ...INITIAL_STAT,
-                        id: userId,
-                    }
-
-                    await db.set("USERS", [...users, user]);
-                }
-
-                return;
-            }
-
-            const minutes = Math.floor(CURRENT_GAME.gameLength / 60)
-            await ctx.callbackQuery.message.editText(`
-В данный момент General_HS_ керрит катку.
-\nИгра длится ${minutes} минут`, {
-                reply_markup: menuKeyboard,
-            })
-
-            if (CURRENT_GAME.gameLength < 1000) {
-                SECONDS_LEFT = 1000 - CURRENT_GAME.gameLength;
-            } else {
-                SECONDS_LEFT = 0;
-            }
-
-            IS_PLAYING_RIGHT_NOW = true;
-        } catch (e) {
-            console.log(e)
-        }
-    }, 10000);
-})
+}) 
 
 bot.callbackQuery("balance-stat", async (ctx) => {
     const userId = ctx.update.callback_query.from.id;
-    const users = await db.get("USERS");
-
-    let user = users.find(user => user.id === userId);
-
-    if (!user) {
-        user = {
-            ...INITIAL_STAT,
-            id: userId,
-        }
-
-        await db.set("USERS", [...users, user]);
-    }
 
     const { bets, successBetCount, totalBets } = user;
 
@@ -227,37 +177,46 @@ bot.callbackQuery("balance-stat", async (ctx) => {
     await ctx.answerCallbackQuery()
 })
 
+
+const statsKeyboard = new InlineKeyboard()
+    .text("<", "prev-game")
+    .text(">", "next-game")
+    .row()
+    .text("Назад", "back")
+
 bot.callbackQuery("history-list", async (ctx) => {
-    const { name, championName, kda, win, kills, deaths, assists, minions, role } = await getLastGameInfo();
-    await ctx.callbackQuery.message.editText(
-        `Последняя игра: ${name}
-Чемпион: ${championName}
-Играл на позиции: ${role}
-Результат: ${win ? "Победа ✅" : "Поражение ❌"}
-Убийств: ${kills}, Смертей: ${deaths}, Ассистов: ${assists}
-Итоговый КДА: ${kda}
-Фарм: ${minions}`, { reply_markup: menuKeyboard });
+    LAST_GAMES = await updateLastGames();
+
+    await ctx.callbackQuery.message.editText(`${LAST_GAMES[0]}`, { reply_markup: new InlineKeyboard()
+            .text("<", "prev-game")
+            .row()
+            .text("Назад", "back") });
     await ctx.answerCallbackQuery()
 })
 
-const app = express();
-app.use(express.json());
+bot.callbackQuery("prev-game", async (ctx) => {
+    if (LAST_GAMES_ACTIVE_INDEX >= 4) return;
 
-const port = PORT || 3002;
-app.listen(port);
+    LAST_GAMES_ACTIVE_INDEX++;
 
-bot.start();
+    await ctx.callbackQuery.message.editText(`${LAST_GAMES[LAST_GAMES_ACTIVE_INDEX]}`, {
+        reply_markup: LAST_GAMES_ACTIVE_INDEX > 3 ? new InlineKeyboard()
+        .text(">", "next-game")
+        .row()
+        .text("Назад", "back")
+    : statsKeyboard });
+    await ctx.answerCallbackQuery()
+})
 
-const getCurrentGame = async function(){
-    const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`)
-        .then(res => res.json())
+bot.callbackQuery("next-game", async (ctx) => {
+    if (LAST_GAMES_ACTIVE_INDEX <= 0) return;
 
-    const PUUID = responseUser.puuid;
-    const currentGame = await fetch(`https://euw1.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/${PUUID}?api_key=${RIOT_API_KEY}`)
-        .then(res => res.json())
-
-    return {
-        id: currentGame.gameId,
-        gameLength: currentGame.gameLength, // сколько длится игра
-    };
-}
+    LAST_GAMES_ACTIVE_INDEX--;
+    await ctx.callbackQuery.message.editText(`${LAST_GAMES[LAST_GAMES_ACTIVE_INDEX]}`, {
+        reply_markup: LAST_GAMES_ACTIVE_INDEX < 1 ? new InlineKeyboard()
+                .text("<", "prev-game")
+                .row()
+                .text("Назад", "back")
+            : statsKeyboard });
+    await ctx.answerCallbackQuery()
+})
