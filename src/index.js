@@ -7,13 +7,6 @@ const express = require('express');
 
 const { BOT_TOKEN, SUMMONER_NAME , SUMMONER_ID , CLIENT_PORT, RIOT_API_KEY, SERVER_PORT, DB_LOGIN, DB_PASS   } = process.env;
 
-const INITIAL_STAT = {
-    bets: 150000,
-    successBetCount: 0,
-    totalBets: 0,
-    activeBet: null
-}
-
 let LAST_GAMES = null,
     LAST_GAMES_ACTIVE_INDEX = 0;
 
@@ -33,6 +26,43 @@ async function run () {
 
         await client.connect();
         return client;
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+const getGameById = async function(gameId) {
+    try {
+        const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`)
+            .then(res => res.json())
+
+        const PUUID = responseUser.puuid;
+
+        if (!PUUID) {
+            throw new Error('Ошибка. Необходимо обновить RIOT_API_KEY.');
+        }
+
+        const game = await fetch(
+            `https://europe.api.riotgames.com/lol/match/v5/matches/${gameId}?api_key=${RIOT_API_KEY}`
+        ).then(res => res.json());
+
+        const playerInfo = game.info.participants.find(player => {
+            return player.puuid === PUUID;
+        });
+
+        const parsedInfo = {
+            championName: playerInfo.championName.toUpperCase(),
+            kda: playerInfo.challenges.kda,
+            role: playerInfo.lane.toUpperCase(),
+            name: playerInfo.riotIdGameName,
+            win: playerInfo.win,
+            kills: playerInfo.kills,
+            deaths: playerInfo.deaths,
+            assists: playerInfo.assists,
+            minions: playerInfo.totalMinionsKilled + playerInfo.neutralMinionsKilled,
+        }
+
+        return `${parsedInfo.win ? "Победил" : "Проиграл"} за ${parsedInfo.championName} на ${parsedInfo.role}. КДА - ${parsedInfo.kills}/${parsedInfo.deaths}/${parsedInfo.assists}. Нафармил - ${parsedInfo.minions} мобов.`
     } catch (error) {
         console.error(error);
     }
@@ -98,12 +128,14 @@ const INTRO_MESSAGE = `
 `
 
 let IS_PLAYING_RIGHT_NOW = false;
-let SECONDS_LEFT = 0;
+let IS_READY_TO_BET = false;
 
 bot.command("start", async (ctx) => {
     socket.on('currentGame', async function (currentGame) {
         if (currentGame) {
             IS_PLAYING_RIGHT_NOW = true;
+
+            IS_READY_TO_BET = currentGame.gameLength < 50;
             return;
         }
 
@@ -144,16 +176,23 @@ bot.callbackQuery("back", async (ctx) => {
 })
 
 bot.callbackQuery("set-bet", async (ctx) => {
-    if (IS_PLAYING_RIGHT_NOW) {
-        await ctx.callbackQuery.message.editText(`Окно ставок закрыто. Пожалуйста, дождитесь результата игры.`, { reply_markup: menuKeyboard });
+    if (IS_PLAYING_RIGHT_NOW && IS_READY_TO_BET) {
+        await ctx.callbackQuery.message.editText(`Ставки доступны__`, { reply_markup: new InlineKeyboard()
+                .text("Назад", "back")
+        });
     }
 
-    // if (!SECONDS_LEFT) {
-    //     await ctx.callbackQuery.message.editText(`В данный момент игра запущена. Время ставок прошло.`, { reply_markup: menuKeyboard });
-    //     return;
-    // }
-    //
-    // await ctx.callbackQuery.message.editText(`Сделайте ставку. До конца приёма ставок осталось ${SECONDS_LEFT} секунд`, { reply_markup: betKeyboard });
+    if (IS_PLAYING_RIGHT_NOW && !IS_READY_TO_BET) {
+        await ctx.callbackQuery.message.editText(`Окно ставок закрыто. Пожалуйста, дождитесь результата игры.`, { reply_markup: new InlineKeyboard()
+                .text("Назад", "back")
+        });
+    }
+
+    if (!IS_PLAYING_RIGHT_NOW) {
+        await ctx.callbackQuery.message.editText(`В данный момент General_HS_ не играет.`, { reply_markup: new InlineKeyboard()
+                .text("Назад", "back")
+        });
+    }
 })
 
 
@@ -164,16 +203,34 @@ bot.callbackQuery("okay", async (ctx) => {
 }) 
 
 bot.callbackQuery("balance-stat", async (ctx) => {
-    const userId = ctx.update.callback_query.from.id;
+    const KEGLYA_DB = dbClient.db("keglya_db");
+    const USERS_COLLECTION = KEGLYA_DB.collection("users");
 
-    const { bets, successBetCount, totalBets } = user;
+    const userId = ctx.update.callback_query.from.id;
+    let uniqueUser = await USERS_COLLECTION.findOne({ name: userId });
+
+    if (!uniqueUser?.name) {
+        uniqueUser = {
+            name: userId,
+            balance: 150000,
+            successBets: 0,
+            totalBets: 0,
+            activeBets: [],
+        }
+
+        await USERS_COLLECTION.insertOne(uniqueUser)
+    }
+
+    const { balance, successBets, totalBets } = uniqueUser;
 
     await ctx.callbackQuery.message.editText(`
     Статистика:
-Свинбетов на счету: ${bets}
-Успешных ставок: ${successBetCount}
+Свинбетов на счету: ${balance}
+Успешных ставок: ${successBets}
 Ставок всего: ${totalBets}
-`, { reply_markup: menuKeyboard });
+`, { reply_markup: new InlineKeyboard()
+            .text("Назад", "back")
+    });
     await ctx.answerCallbackQuery()
 })
 
@@ -187,7 +244,8 @@ const statsKeyboard = new InlineKeyboard()
 bot.callbackQuery("history-list", async (ctx) => {
     LAST_GAMES = await updateLastGames();
 
-    await ctx.callbackQuery.message.editText(`${LAST_GAMES[0]}`, { reply_markup: new InlineKeyboard()
+    const gameInfo = await getGameById(LAST_GAMES[LAST_GAMES_ACTIVE_INDEX])
+    await ctx.callbackQuery.message.editText(`${gameInfo}`, { reply_markup: new InlineKeyboard()
             .text("<", "prev-game")
             .row()
             .text("Назад", "back") });
@@ -199,7 +257,8 @@ bot.callbackQuery("prev-game", async (ctx) => {
 
     LAST_GAMES_ACTIVE_INDEX++;
 
-    await ctx.callbackQuery.message.editText(`${LAST_GAMES[LAST_GAMES_ACTIVE_INDEX]}`, {
+    const gameInfo = await getGameById(LAST_GAMES[LAST_GAMES_ACTIVE_INDEX])
+    await ctx.callbackQuery.message.editText(`${gameInfo}`, {
         reply_markup: LAST_GAMES_ACTIVE_INDEX > 3 ? new InlineKeyboard()
         .text(">", "next-game")
         .row()
@@ -212,7 +271,9 @@ bot.callbackQuery("next-game", async (ctx) => {
     if (LAST_GAMES_ACTIVE_INDEX <= 0) return;
 
     LAST_GAMES_ACTIVE_INDEX--;
-    await ctx.callbackQuery.message.editText(`${LAST_GAMES[LAST_GAMES_ACTIVE_INDEX]}`, {
+
+    const gameInfo = await getGameById(LAST_GAMES[LAST_GAMES_ACTIVE_INDEX])
+    await ctx.callbackQuery.message.editText(`${gameInfo}`, {
         reply_markup: LAST_GAMES_ACTIVE_INDEX < 1 ? new InlineKeyboard()
                 .text("<", "prev-game")
                 .row()

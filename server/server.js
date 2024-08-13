@@ -32,8 +32,6 @@ const getCurrentGame = async function(){
     )
     .then(res => res.json())
 
-    await delay(20000);
-
     if (currentGame.gameId && currentGame.gameLength) {
       io.sockets.emit('currentGame', {
         id: currentGame.gameId, // айди игры
@@ -43,6 +41,7 @@ const getCurrentGame = async function(){
       io.sockets.emit('currentGame', null);
     }
 
+    await delay(20000);
     await getCurrentGame();
   } catch(error) {
     console.log(error);
