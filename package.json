@@ -4,12 +4,13 @@
   "description": "",
   "main": "src/index.js",
   "scripts": {
-    "dev": "node ./src/index.js"
+    "start": "node ./src/index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@grammyjs/conversations": "^1.2.0",
     "@grammyjs/hydrate": "^1.4.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

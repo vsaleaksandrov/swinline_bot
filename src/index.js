@@ -1,14 +1,19 @@
 require('dotenv').config({ path: ".env" });
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const { io } = require("socket.io-client");
-const { Bot, InlineKeyboard } = require("grammy");
+const { Bot, session, InlineKeyboard,  } = require("grammy");
 const { hydrate } = require("@grammyjs/hydrate");
+const {
+    conversations,
+    createConversation,
+} = require("@grammyjs/conversations");
 const express = require('express');
 
-const { BOT_TOKEN, SUMMONER_NAME , SUMMONER_ID , CLIENT_PORT, RIOT_API_KEY, SERVER_PORT, DB_LOGIN, DB_PASS   } = process.env;
+const { BOT_TOKEN, USER_ID, CLIENT_PORT, SERVER_PORT, DB_LOGIN, DB_PASS   } = process.env;
 
 let LAST_GAMES = null,
-    LAST_GAMES_ACTIVE_INDEX = 0;
+    LAST_GAMES_ACTIVE_INDEX = 0,
+    CURRENT_GAME_INFO = null;
 
 const uri = `mongodb+srv://${DB_LOGIN}:${DB_PASS}@cluster0.j9yo8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 let dbClient = null;
@@ -33,7 +38,11 @@ async function run () {
 
 const getGameById = async function(gameId) {
     try {
-        const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`)
+        const KEGLYA_DB = await dbClient.db("keglya_db");
+        const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
+        const { RIOT_API_KEY, SUMMONER } = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
+
+        const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER}?api_key=${RIOT_API_KEY}`)
             .then(res => res.json())
 
         const PUUID = responseUser.puuid;
@@ -70,7 +79,11 @@ const getGameById = async function(gameId) {
 
 const updateLastGames = async function() {
     try {
-        const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`)
+        const KEGLYA_DB = await dbClient.db("keglya_db");
+        const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
+        const { RIOT_API_KEY, SUMMONER } = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
+
+        const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER}?api_key=${RIOT_API_KEY}`)
             .then(res => res.json())
 
         const PUUID = responseUser.puuid;
@@ -89,6 +102,14 @@ const updateLastGames = async function() {
 // Запускаем бота, работяги
 const bot = new Bot(BOT_TOKEN);
 bot.use(hydrate());
+bot.use(session({
+    initial() {
+        return {};
+    },
+}));
+
+bot.use(conversations());
+bot.use(createConversation(weaksideDialogue));
 bot.start();
 
 // Запускаем сервер
@@ -105,6 +126,31 @@ bot.api.setMyCommands([
     }
 ])
 
+async function weaksideDialogue(conversation, ctx) {
+    const { message } = await conversation.wait();
+
+    if (!message) return;
+
+    const KEGLYA_DB = await dbClient.db("keglya_db");
+    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
+
+    if (message.text.indexOf('RGAPI') !== -1) {
+        await SETTINGS_COLLECTION.updateOne({ TWITCH_ID: "GENERAL_HS_" }, { "$set": { RIOT_API_KEY: message.text } } );
+
+        await ctx.reply(`RIOT_API_KEY обновлён. Текущее значение ${message.text}`, {
+            reply_markup: adminKeyboard,
+        });
+    } else {
+        await SETTINGS_COLLECTION.updateOne({ TWITCH_ID: "GENERAL_HS_" }, { "$set": { SUMMONER: message.text } } );
+
+        await ctx.reply(`SUMMONER_NAME#SUMMONER_ID обновлён. Текущее значение ${message.text}`, {
+            reply_markup: adminKeyboard,
+        });
+    }
+
+    await conversation.exit;
+}
+
 const menuKeyboard = new InlineKeyboard()
     .text("Статистика ставок", "balance-stat")
     .text("Последние игры", "history-list")
@@ -120,6 +166,30 @@ const betKeyboard = new InlineKeyboard()
 const submitKeyboard = new InlineKeyboard()
     .text("Я понял", "okay")
 
+
+const adminKeyboard = new InlineKeyboard()
+    .text("Обновить RIOT_API_KEY", "update_riot_api_key").row()
+    .text("Обновить SUMMONER_NAME#SUMMONER_ID", "update_summoner_info")
+
+bot.callbackQuery("update_riot_api_key", async (ctx) => {
+    const KEGLYA_DB = await dbClient.db("keglya_db");
+    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
+    const INFO = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
+
+    await ctx.reply(`Текущий RIOT_API_KEY - ${INFO.RIOT_API_KEY}. Отправьте сообщение с новым значением.`)
+    await ctx.conversation.enter("weaksideDialogue")
+});
+
+bot.callbackQuery("update_summoner_info", async (ctx) => {
+    const KEGLYA_DB = await dbClient.db("keglya_db");
+    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
+    const INFO = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
+
+    await ctx.reply(`Текущий SUMMONER - ${INFO.SUMMONER}. Отправьте сообщение с новым значением.`)
+    await ctx.conversation.enter("weaksideDialogue")
+});
+
+
 const INTRO_MESSAGE = `
 СВИНЛАЙН 🐷 - самый честный и бесполезный букмекер
 \nЗдесь можно делать ставки на игры стримера General_HS_ по League of Legends
@@ -129,17 +199,43 @@ const INTRO_MESSAGE = `
 
 let IS_PLAYING_RIGHT_NOW = false;
 let IS_READY_TO_BET = false;
+let IS_ADMIN = false;
+
+bot.command("start_admin", async (ctx) => {;
+    IS_ADMIN = `${ctx.message.chat.id}` === USER_ID;
+
+    if (!IS_ADMIN) return;
+
+    await ctx.reply(`Это админская панель. Здесь можно обновить данные для активного игрока.`, {
+        reply_markup: adminKeyboard,
+    })
+});
 
 bot.command("start", async (ctx) => {
     socket.on('currentGame', async function (currentGame) {
+        console.log(currentGame);
         if (currentGame) {
             IS_PLAYING_RIGHT_NOW = true;
-
             IS_READY_TO_BET = currentGame.gameLength < 50;
+
+            if (!CURRENT_GAME_INFO) {
+                CURRENT_GAME_INFO = currentGame;
+                await ctx.reply("Игра началась. Ставки открыты", {
+                    reply_markup: betKeyboard,
+                });
+            }
             return;
         }
 
         IS_PLAYING_RIGHT_NOW = false;
+
+        if (CURRENT_GAME_INFO) {
+            await ctx.reply("Игра окончена", {
+                reply_markup: submitKeyboard,
+            });
+
+            CURRENT_GAME_INFO = null;
+        }
     });
 
     await ctx.reply(INTRO_MESSAGE, {

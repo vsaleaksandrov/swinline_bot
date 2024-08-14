@@ -8,16 +8,40 @@ const app = express();
 const server = http.createServer(app);
 const io = socketio(server);
 
-const { SUMMONER_NAME, SUMMONER_ID, RIOT_API_KEY, SERVER_PORT } = process.env;
+const { DB_LOGIN, DB_PASS, SERVER_PORT } = process.env;
 
 // Таймаут запросов
 const delay = ms => new Promise(res => setTimeout(res, ms));
+
+const uri = `mongodb+srv://${DB_LOGIN}:${DB_PASS}@cluster0.j9yo8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
+let dbClient = null;
+
+async function run () {
+  try {
+    const client = new MongoClient(uri, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+      }
+    });
+
+    await client.connect();
+    return client;
+  } catch (error) {
+    console.error(error);
+  }
+}
  
 // Получаем инфу по текущей игре
 const getCurrentGame = async function(){
   try {
+    const KEGLYA_DB = await dbClient.db("keglya_db");
+    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
+    const { RIOT_API_KEY, SUMMONER } = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
+
     const responseUser = await fetch(
-      `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER_NAME}/${SUMMONER_ID}?api_key=${RIOT_API_KEY}`
+      `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER}?api_key=${RIOT_API_KEY}`
     )
     .then(res => res.json())
 
@@ -52,15 +76,11 @@ io.on("connection", () => {
   console.log('Вебсокет соединение установлено');
 })
 
-app.get('/', (req, res) => {
-  io.sockets.emit('message', async function (message) {
-    console.log('A client is speaking to me! They’re saying: ' + SUMMONER_ID);
-  });
-  res.send(SUMMONER_ID)
-})
-
 server.listen(SERVER_PORT,()=>{
-  getCurrentGame().then(r => console.log("Поехало крутиться"));
+  run().then(res => {
+    dbClient = res
+    getCurrentGame().then(r => console.log("Поехало крутиться"))
+  }).catch(console.dir);
 })
 
 process.on('SIGTERM', () => {
