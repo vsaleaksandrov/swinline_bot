@@ -65,8 +65,8 @@ const getCurrentGame = async function(){
       io.sockets.emit('currentGame', null);
     }
 
-    await delay(20000);
     await getCurrentGame();
+    await delay(20000);
   } catch(error) {
     console.log(error);
   }

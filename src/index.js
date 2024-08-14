@@ -213,7 +213,6 @@ bot.command("start_admin", async (ctx) => {;
 
 bot.command("start", async (ctx) => {
     socket.on('currentGame', async function (currentGame) {
-        console.log(currentGame);
         if (currentGame) {
             IS_PLAYING_RIGHT_NOW = true;
             IS_READY_TO_BET = currentGame.gameLength < 50;
