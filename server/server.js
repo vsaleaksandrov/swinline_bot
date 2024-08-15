@@ -13,6 +13,7 @@ const { DB_LOGIN, DB_PASS, SERVER_PORT } = process.env;
 // Таймаут запросов
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
+// <!- MONGODB SECTION >
 const mongoDbUri = `mongodb+srv://${DB_LOGIN}:${DB_PASS}@cluster0.j9yo8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 let dbClient = null;
 
@@ -32,22 +33,27 @@ async function mongoDbStartServer () {
     console.error(error);
   }
 }
+// <!- MONGODB SECTION >
+
+const getPlayerInfo = async () => {
+  const KEGLYA_DB = await dbClient.db("keglya_db");
+  const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
+  const PLAYER_INFO = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
+
+  const RESPONSE_USER = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${PLAYER_INFO.SUMMONER}?api_key=${PLAYER_INFO.RIOT_API_KEY}`)
+      .then(res => res.json())
+
+  return { PLAYER_INFO, RESPONSE_USER };
+}
 
 app.get('/getLastGames', async (req, res) => {
   try {
-    const KEGLYA_DB = await dbClient.db("keglya_db");
-    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
-    const PLAYER_INFO = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
-
-    const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${PLAYER_INFO.SUMMONER}?api_key=${PLAYER_INFO.RIOT_API_KEY}`)
-        .then(res => res.json())
-
-    if (!responseUser) {
-      await updatePlayerInfo();
+    const { RESPONSE_USER, PLAYER_INFO } = await getPlayerInfo();
+    if (!RESPONSE_USER) {
       throw new Error("Не удалось получить информацию из БД")
     }
 
-    const PUUID = responseUser.puuid;
+    const PUUID = RESPONSE_USER.puuid;
 
     if (!PUUID) throw new Error('Ошибка. Необходимо обновить RIOT_API_KEY.');
 
@@ -64,14 +70,9 @@ app.get('/getGameById/:gameId', async (req, res) => {
   const gameId = req.params.gameId;
 
   try {
-    const KEGLYA_DB = await dbClient.db("keglya_db");
-    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
-    const PLAYER_INFO = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
+    const { PLAYER_INFO, RESPONSE_USER } = await getPlayerInfo();
 
-    const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${PLAYER_INFO.SUMMONER}?api_key=${PLAYER_INFO.RIOT_API_KEY}`)
-        .then(res => res.json())
-
-    const PUUID = responseUser.puuid;
+    const PUUID = RESPONSE_USER.puuid;
 
     if (!PUUID) {
       throw new Error('Ошибка. Необходимо обновить RIOT_API_KEY.');
@@ -110,16 +111,9 @@ app.get('/getGameById/:gameId', async (req, res) => {
 // Получаем инфу по текущей игре
 const getCurrentGame = async function(){
   try {
-    const KEGLYA_DB = await dbClient.db("keglya_db");
-    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
-    const PLAYER_INFO = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
+    const { RESPONSE_USER, PLAYER_INFO } = await getPlayerInfo();
 
-    const responseUser = await fetch(
-      `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${PLAYER_INFO.SUMMONER}?api_key=${PLAYER_INFO.RIOT_API_KEY}`
-    )
-    .then(res => res.json())
-
-    const PUUID = responseUser.puuid;
+    const PUUID = RESPONSE_USER.puuid;
 
     if (!PUUID) {
       throw new Error('Ошибка. Необходимо обновить RIOT_API_KEY.');
