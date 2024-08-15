@@ -151,7 +151,7 @@ let IS_PLAYING_RIGHT_NOW = false;
 let IS_READY_TO_BET = false;
 let IS_ADMIN = false;
 
-bot.command("start_admin", async (ctx) => {;
+bot.command("start_admin", async (ctx) => {
     IS_ADMIN = `${ctx.message.chat.id}` === USER_ID;
 
     if (!IS_ADMIN) return;
