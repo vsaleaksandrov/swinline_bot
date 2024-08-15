@@ -163,32 +163,53 @@ let CURRENT_BET = [{
     sum: null,
 }, {
     type: "KDA",
+    count: 0,
     sum: null,
 }, {
     type: "FARM",
+    count: 0,
     sum: null,
 }];
 
+
 async function betSum(conversation, ctx) {
     const userId = ctx.update.callback_query.from.id;
-    const { message } = await conversation.wait();
-    if (!message) return;
+    let answer = await conversation.wait();
+    if (!answer.message) return;
+
+    if (CURRENT_BET.find(() => CURRENT_BET_TYPE === "FARM" || CURRENT_BET_TYPE === "KDA")) {
+        CURRENT_BET = CURRENT_BET.map(bet => {
+            if (bet.type === CURRENT_BET_TYPE) {
+                return {
+                    ...bet,
+                    count: answer.message.text,
+                }
+            }
+
+            return bet;
+        });
+    }
+
+    await ctx.reply(`Укажите сумму ставки`)
+    answer = await conversation.wait()
+
+    // TODO проверка на валидное значение
 
     CURRENT_BET = CURRENT_BET.map(bet => {
         if (bet.type === CURRENT_BET_TYPE) {
             return {
                 ...bet,
-                sum: message.text,
+                sum: answer.message.text,
             }
         }
 
         return bet;
     });
 
-    // здесь нужно будет отправить на бэк обновлённый массив CURRENT_BET
+    // TODO здесь нужно будет отправить на бэк обновлённый массив CURRENT_BET
 
     await ctx.reply(`
-Ваша ставка ${CURRENT_BET_TYPE} в размере ${message.text} принята. 
+Ваша ставка ${CURRENT_BET_TYPE} в размере ${answer.message.text} принята. 
 `, {
         reply_markup: betKeyboard,
     })
@@ -208,7 +229,12 @@ async function updateCurrentBet(ctx) {
         return;
     }
 
-    await ctx.reply(`Укажите сумму ставки`)
+    if (CURRENT_BET.find(() => CURRENT_BET_TYPE === "FARM" || CURRENT_BET_TYPE === "KDA")) {
+        await ctx.reply(`Укажите значение`)
+    } else {
+        await ctx.reply(`Укажите сумму ставки`)
+    }
+
     await ctx.conversation.enter("betSum")
 }
 
