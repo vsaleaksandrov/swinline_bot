@@ -15,13 +15,13 @@ let LAST_GAMES = null,
     LAST_GAMES_ACTIVE_INDEX = 0,
     CURRENT_GAME_INFO = null;
 
-const uri = `mongodb+srv://${DB_LOGIN}:${DB_PASS}@cluster0.j9yo8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
+const mongoDbUri = `mongodb+srv://${DB_LOGIN}:${DB_PASS}@cluster0.j9yo8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 let dbClient = null;
-run().then(res => dbClient = res).catch(console.dir);
+mongoDbStartServer().then(res => dbClient = res).catch(console.dir);
 
-async function run () {
+async function mongoDbStartServer () {
     try {
-        const client = new MongoClient(uri, {
+        const client = new MongoClient(mongoDbUri, {
             serverApi: {
                 version: ServerApiVersion.v1,
                 strict: true,
@@ -33,69 +33,6 @@ async function run () {
         return client;
     } catch (error) {
         console.error(error);
-    }
-}
-
-const getGameById = async function(gameId) {
-    try {
-        const KEGLYA_DB = await dbClient.db("keglya_db");
-        const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
-        const { RIOT_API_KEY, SUMMONER } = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
-
-        const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER}?api_key=${RIOT_API_KEY}`)
-            .then(res => res.json())
-
-        const PUUID = responseUser.puuid;
-
-        if (!PUUID) {
-            throw new Error('Ошибка. Необходимо обновить RIOT_API_KEY.');
-        }
-
-        const game = await fetch(
-            `https://europe.api.riotgames.com/lol/match/v5/matches/${gameId}?api_key=${RIOT_API_KEY}`
-        ).then(res => res.json());
-
-        const playerInfo = game.info.participants.find(player => {
-            return player.puuid === PUUID;
-        });
-
-        const parsedInfo = {
-            championName: playerInfo.championName.toUpperCase(),
-            kda: playerInfo.challenges.kda,
-            role: playerInfo.lane.toUpperCase(),
-            name: playerInfo.riotIdGameName,
-            win: playerInfo.win,
-            kills: playerInfo.kills,
-            deaths: playerInfo.deaths,
-            assists: playerInfo.assists,
-            minions: playerInfo.totalMinionsKilled + playerInfo.neutralMinionsKilled,
-        }
-
-        return `${parsedInfo.win ? "Победил" : "Проиграл"} за ${parsedInfo.championName} на ${parsedInfo.role}. КДА - ${parsedInfo.kills}/${parsedInfo.deaths}/${parsedInfo.assists}. Нафармил - ${parsedInfo.minions} мобов.`
-    } catch (error) {
-        console.error(error);
-    }
-}
-
-const updateLastGames = async function() {
-    try {
-        const KEGLYA_DB = await dbClient.db("keglya_db");
-        const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
-        const { RIOT_API_KEY, SUMMONER } = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
-
-        const responseUser = await fetch(`https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${SUMMONER}?api_key=${RIOT_API_KEY}`)
-            .then(res => res.json())
-
-        const PUUID = responseUser.puuid;
-
-        if (!PUUID) {
-            throw new Error('Ошибка. Необходимо обновить RIOT_API_KEY.');
-        }
-
-        return await fetch(`https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/${PUUID}/ids?start=0&count=5&api_key=${RIOT_API_KEY}`)
-            .then(res => res.json());
-    } catch (error) {
-        console.log(error);
     }
 }
 
@@ -117,22 +54,26 @@ const app = express();
 app.use(express.json());
 app.listen(CLIENT_PORT);
 
-const socket = io(`http://localhost:${SERVER_PORT}`);
+const SERVER_URI = `http://localhost:${SERVER_PORT}`;
+const socket = io(SERVER_URI);
 
 bot.api.setMyCommands([
     {
         command: "start",
-        description: "Бот самой честной и бесполезной букмекерской конторы СВИНЛАЙН."
+        description: "Weakside_bot"
     }
 ])
+
+const getGameById = async (gameId) => await fetch(`${SERVER_URI}/getGameById/${gameId}`);
+
+const getLastGames = async () => await fetch(`${SERVER_URI}/getLastGames`).then(res => res.json());
 
 async function weaksideDialogue(conversation, ctx) {
     const { message } = await conversation.wait();
 
     if (!message) return;
 
-    const KEGLYA_DB = await dbClient.db("keglya_db");
-    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
+    const SETTINGS_COLLECTION = await getDBSettingsCollection();
 
     if (message.text.indexOf('RGAPI') !== -1) {
         await SETTINGS_COLLECTION.updateOne({ TWITCH_ID: "GENERAL_HS_" }, { "$set": { RIOT_API_KEY: message.text } } );
@@ -171,29 +112,38 @@ const adminKeyboard = new InlineKeyboard()
     .text("Обновить RIOT_API_KEY", "update_riot_api_key").row()
     .text("Обновить SUMMONER_NAME#SUMMONER_ID", "update_summoner_info")
 
-bot.callbackQuery("update_riot_api_key", async (ctx) => {
-    const KEGLYA_DB = await dbClient.db("keglya_db");
-    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
-    const INFO = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
 
+const getDBSettingsCollection = async () => {
+    const KEGLYA_DB = await dbClient.db("keglya_db");
+    return await KEGLYA_DB.collection("settings");
+}
+
+const getDBUsersCollection = async () => {
+    const KEGLYA_DB = await dbClient.db("keglya_db");
+    return await KEGLYA_DB.collection("users");
+}
+
+const getDBInfo = async () => {
+    const SETTINGS_COLLECTION = await getDBSettingsCollection();
+    return await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
+}
+
+bot.callbackQuery("update_riot_api_key", async (ctx) => {
+    const INFO = await getDBInfo();
     await ctx.reply(`Текущий RIOT_API_KEY - ${INFO.RIOT_API_KEY}. Отправьте сообщение с новым значением.`)
     await ctx.conversation.enter("weaksideDialogue")
 });
 
 bot.callbackQuery("update_summoner_info", async (ctx) => {
-    const KEGLYA_DB = await dbClient.db("keglya_db");
-    const SETTINGS_COLLECTION = await KEGLYA_DB.collection("settings");
-    const INFO = await SETTINGS_COLLECTION.findOne({ TWITCH_ID: "GENERAL_HS_"});
-
+    const INFO = await getDBInfo();
     await ctx.reply(`Текущий SUMMONER - ${INFO.SUMMONER}. Отправьте сообщение с новым значением.`)
     await ctx.conversation.enter("weaksideDialogue")
 });
 
 
 const INTRO_MESSAGE = `
-СВИНЛАЙН 🐷 - самый честный и бесполезный букмекер
-\nЗдесь можно делать ставки на игры стримера General_HS_ по League of Legends
-\nСтавки делаются исключительно на игровую валюту - свинбеты. Никакого вывода или пополнения не предусмотрено.
+Здесь можно делать ставки на игры стримера General_HS_ по League of Legends
+\nСтавки делаются исключительно на игровую валюту. Никакого вывода или пополнения не предусмотрено.
 \nБот автоматически предложит вам сделать ставку как только General_HS_ начнёт игру. После того как игра закончится - бот рассчитает ставку и выплатит выигрыш.
 `
 
@@ -247,7 +197,7 @@ bot.callbackQuery("win", async (ctx) => {
 
     await ctx.callbackQuery.message.editText(`
 Ваша ставка WIN принята. 
-\nЕсли ставка окажется верна - вам начислится 1000 свинбетов.
+\nЕсли ставка окажется верна - вам начислится 1000 бетов.
 `, {
         reply_markup: menuKeyboard,
     })
@@ -258,7 +208,7 @@ bot.callbackQuery("lost", async (ctx) => {
 
     await ctx.callbackQuery.message.editText(`
 Ваша ставка LOST принята.
-\nЕсли General_HS_ победит - вам начислится 1000 свинбетов.
+\nЕсли General_HS_ победит - вам начислится 1000 бетов.
 `, {
         reply_markup: menuKeyboard,
     })
@@ -298,8 +248,7 @@ bot.callbackQuery("okay", async (ctx) => {
 }) 
 
 bot.callbackQuery("balance-stat", async (ctx) => {
-    const KEGLYA_DB = dbClient.db("keglya_db");
-    const USERS_COLLECTION = KEGLYA_DB.collection("users");
+    const USERS_COLLECTION = await getDBUsersCollection();
 
     const userId = ctx.update.callback_query.from.id;
     let uniqueUser = await USERS_COLLECTION.findOne({ name: userId });
@@ -320,7 +269,7 @@ bot.callbackQuery("balance-stat", async (ctx) => {
 
     await ctx.callbackQuery.message.editText(`
     Статистика:
-Свинбетов на счету: ${balance}
+Бетов на счету: ${balance}
 Успешных ставок: ${successBets}
 Ставок всего: ${totalBets}
 `, { reply_markup: new InlineKeyboard()
@@ -337,9 +286,9 @@ const statsKeyboard = new InlineKeyboard()
     .text("Назад", "back")
 
 bot.callbackQuery("history-list", async (ctx) => {
-    LAST_GAMES = await updateLastGames();
+    LAST_GAMES = await getLastGames();
 
-    const gameInfo = await getGameById(LAST_GAMES[LAST_GAMES_ACTIVE_INDEX])
+    const gameInfo = await getGameById(LAST_GAMES[LAST_GAMES_ACTIVE_INDEX]).then(res => res.text());
     await ctx.callbackQuery.message.editText(`${gameInfo}`, { reply_markup: new InlineKeyboard()
             .text("<", "prev-game")
             .row()
@@ -352,7 +301,7 @@ bot.callbackQuery("prev-game", async (ctx) => {
 
     LAST_GAMES_ACTIVE_INDEX++;
 
-    const gameInfo = await getGameById(LAST_GAMES[LAST_GAMES_ACTIVE_INDEX])
+    const gameInfo = await getGameById(LAST_GAMES[LAST_GAMES_ACTIVE_INDEX]).then(res => res.text());
     await ctx.callbackQuery.message.editText(`${gameInfo}`, {
         reply_markup: LAST_GAMES_ACTIVE_INDEX > 3 ? new InlineKeyboard()
         .text(">", "next-game")
@@ -367,7 +316,7 @@ bot.callbackQuery("next-game", async (ctx) => {
 
     LAST_GAMES_ACTIVE_INDEX--;
 
-    const gameInfo = await getGameById(LAST_GAMES[LAST_GAMES_ACTIVE_INDEX])
+    const gameInfo = await getGameById(LAST_GAMES[LAST_GAMES_ACTIVE_INDEX]).then(res => res.text());
     await ctx.callbackQuery.message.editText(`${gameInfo}`, {
         reply_markup: LAST_GAMES_ACTIVE_INDEX < 1 ? new InlineKeyboard()
                 .text("<", "prev-game")
