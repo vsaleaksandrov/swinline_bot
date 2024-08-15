@@ -188,10 +188,10 @@ async function betSum(conversation, ctx) {
 
             return bet;
         });
-    }
 
-    await ctx.reply(`Укажите сумму ставки`)
-    answer = await conversation.wait()
+        await ctx.reply(`Укажите сумму ставки`)
+        answer = await conversation.wait()
+    }
 
     // TODO проверка на валидное значение
 
@@ -221,7 +221,7 @@ async function updateCurrentBet(ctx) {
     const currentBetSum = CURRENT_BET.find(bet => bet.type === CURRENT_BET_TYPE).sum;
 
     if (currentBetSum) {
-        await ctx.reply(`
+        await ctx.callbackQuery.message.editText(`
 Ваша ставка ${CURRENT_BET_TYPE} в размере ${currentBetSum} уже принята. 
 `, {
             reply_markup: betKeyboard,
