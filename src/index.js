@@ -150,7 +150,7 @@ const INTRO_MESSAGE = `
 \nБот автоматически предложит вам сделать ставку как только General_HS_ начнёт игру. После того как игра закончится - бот рассчитает ставку и выплатит выигрыш.
 `
 
-let IS_PLAYING_RIGHT_NOW = false;
+let IS_PLAYING_RIGHT_NOW = true;
 let IS_READY_TO_BET = false;
 let IS_ADMIN = false;
 
@@ -171,11 +171,24 @@ let CURRENT_BET = [{
     sum: null,
 }];
 
+function isNumeric(str) {
+    if (typeof str != "string") return false // we only process strings!
+    return !isNaN(str) && // use type coercion to parse the _entirety_ of the string (`parseFloat` alone does not do this)...
+        !isNaN(parseFloat(str)) // ...and ensure strings of whitespace fail
+}
 
 async function betSum(conversation, ctx) {
     const userId = ctx.update.callback_query.from.id;
+    const USERS_COLLECTION = await getDBUsersCollection();
+    let uniqueUser = await USERS_COLLECTION.findOne({ name: userId });
+
     let answer = await conversation.wait();
     if (!answer.message) return;
+
+    if (!isNumeric(answer.message.text)) {
+        await ctx.reply(`Укажите корректное значение ставки.`)
+        return;
+    }
 
     if (CURRENT_BET.find(() => CURRENT_BET_TYPE === "FARM" || CURRENT_BET_TYPE === "KDA")) {
         CURRENT_BET = CURRENT_BET.map(bet => {
@@ -191,9 +204,17 @@ async function betSum(conversation, ctx) {
 
         await ctx.reply(`Укажите сумму ставки`)
         answer = await conversation.wait()
-    }
 
-    // TODO проверка на валидное значение
+        if (!isNumeric(answer.message.text)) {
+            await ctx.reply(`Укажите корректную сумму ставки.`)
+            return;
+        }
+
+        if (answer.message.text > uniqueUser.balance) {
+            await ctx.reply(`Ваш баланс ${uniqueUser.balance}. Укажите корректную сумму ставки.`)
+            return;
+        }
+    }
 
     CURRENT_BET = CURRENT_BET.map(bet => {
         if (bet.type === CURRENT_BET_TYPE) {
@@ -274,7 +295,7 @@ bot.command("start", async (ctx) => {
             IS_PLAYING_RIGHT_NOW = true;
             IS_READY_TO_BET = currentGame.gameLength < 50;
 
-            if (!CURRENT_GAME_INFO) {
+            if (!CURRENT_GAME_INFO && IS_READY_TO_BET) {
                 CURRENT_GAME_INFO = currentGame;
                 await ctx.reply("Игра началась. Ставки открыты", {
                     reply_markup: betKeyboard,
@@ -306,27 +327,23 @@ bot.callbackQuery("back", async (ctx) => {
 })
 
 bot.callbackQuery("set-bet", async (ctx) => {
-    await ctx.reply("Игра началась. Ставки открыты", {
-        reply_markup: betKeyboard,
-    });
+    if (IS_PLAYING_RIGHT_NOW && IS_READY_TO_BET) {
+        await ctx.callbackQuery.message.editText(`Игра началась. Ставки открыты`, { reply_markup: new betKeyboard()
+                .text("Назад", "back")
+        });
+    }
 
-    // if (IS_PLAYING_RIGHT_NOW && IS_READY_TO_BET) {
-    //     await ctx.callbackQuery.message.editText(`Ставки доступны__`, { reply_markup: new InlineKeyboard()
-    //             .text("Назад", "back")
-    //     });
-    // }
-    //
-    // if (IS_PLAYING_RIGHT_NOW && !IS_READY_TO_BET) {
-    //     await ctx.callbackQuery.message.editText(`Окно ставок закрыто. Пожалуйста, дождитесь результата игры.`, { reply_markup: new InlineKeyboard()
-    //             .text("Назад", "back")
-    //     });
-    // }
-    //
-    // if (!IS_PLAYING_RIGHT_NOW) {
-    //     await ctx.callbackQuery.message.editText(`В данный момент General_HS_ не играет.`, { reply_markup: new InlineKeyboard()
-    //             .text("Назад", "back")
-    //     });
-    // }
+    if (IS_PLAYING_RIGHT_NOW && !IS_READY_TO_BET) {
+        await ctx.callbackQuery.message.editText(`Окно ставок закрыто. Пожалуйста, дождитесь начала следующей игры.`, { reply_markup: new InlineKeyboard()
+                .text("Назад", "back")
+        });
+    }
+
+    if (!IS_PLAYING_RIGHT_NOW) {
+        await ctx.callbackQuery.message.editText(`В данный момент General_HS_ не играет.`, { reply_markup: new InlineKeyboard()
+                .text("Назад", "back")
+        });
+    }
 })
 
 
